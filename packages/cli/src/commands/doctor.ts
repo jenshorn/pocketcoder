@@ -18,7 +18,8 @@ export function addDoctorCommand(parser: Argv) {
         .option("turn-timeout-seconds", {
           type: "number",
           default: 60,
-          description: "Maximum time to wait for the correlated diagnostic response",
+          description:
+            "Maximum wait for agent input readiness and, separately, its diagnostic response",
         }),
     runDoctor,
   );
@@ -37,8 +38,9 @@ async function runDoctor(flags: Flags) {
     console.log(`doctor: workspace ${workspace.id} queued; waiting for ready`);
     await waitUntilReady(workspace.id);
     console.log("doctor: workspace ready; probing agent status through the relay");
-    await verifyStatus(workspace.id);
-    await runTurn(workspace.id, turnTimeout(flags));
+    const timeoutSeconds = turnTimeout(flags);
+    await waitForInput(workspace.id, timeoutSeconds);
+    await runTurn(workspace.id, timeoutSeconds);
     console.log("doctor: correlated agent response received");
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
@@ -79,6 +81,16 @@ async function waitUntilReady(workspaceId: string) {
   throw new Error("workspace did not become ready within 5 minutes");
 }
 
+async function waitForInput(workspaceId: string, timeoutSeconds: number) {
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  while (Date.now() < deadline) {
+    // A ready workspace can still be inside AgentAPI's startup quiet period.
+    if ((await verifyStatus(workspaceId)) === "stable") return;
+    await Bun.sleep(500);
+  }
+  throw new Error(`agent did not become stable within ${timeoutSeconds} seconds`);
+}
+
 async function verifyStatus(workspaceId: string) {
   const response = await api(`/v1/workspaces/${workspaceId}/agent/status`);
   const text = await response.text();
@@ -93,6 +105,7 @@ async function verifyStatus(workspaceId: string) {
   if (body.status !== "running" && body.status !== "stable") {
     throw new Error(`agent status probe returned unknown status: ${JSON.stringify(body.status)}`);
   }
+  return body.status;
 }
 
 async function runTurn(workspaceId: string, timeoutSeconds: number) {
