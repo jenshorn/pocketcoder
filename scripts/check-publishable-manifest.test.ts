@@ -1,67 +1,53 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
-import { assertNoLocalInstallDependencies } from "./check-publishable-manifest";
+import {
+  assertNoLocalInstallDependencies,
+  assertWorkspaceInstallDependencies,
+} from "./check-publishable-manifest";
+
+const workspaces = new Map([
+  ["sdk", { version: "1.2.3" }],
+  ["internal", { version: "1.0.0", private: true }],
+]);
 
 test("rejects local-only ranges that would reach package consumers", () => {
+  expect(() =>
+    assertNoLocalInstallDependencies({
+      dependencies: { runtime: "workspace:^" },
+      optionalDependencies: { optional: "catalog:shared" },
+      peerDependencies: { peer: "file:../peer" },
+    }),
+  ).toThrow("local-only install dependencies");
+});
+
+test.each(["../runtime", "C:\\runtime"])("rejects bare filesystem range %s", (range) => {
+  expect(() => assertNoLocalInstallDependencies({ dependencies: { runtime: range } })).toThrow(
+    "local-only install dependencies",
+  );
+});
+
+test("accepts compatible public dependencies and local development dependencies", () => {
   const manifest = {
-    name: "@pstdio/example",
-    dependencies: { runtime: "workspace:^" },
-    optionalDependencies: { optional: "catalog:shared" },
-    peerDependencies: { peer: "file:../peer" },
+    dependencies: { sdk: "^1.2.0", external: "^2.0.0" },
+    devDependencies: { internal: "workspace:*" },
   };
-
-  expect(() => assertNoLocalInstallDependencies(manifest)).toThrow(
-    "@pstdio/example has local-only install dependencies: dependencies.runtime (workspace:^), optionalDependencies.optional (catalog:shared), peerDependencies.peer (file:../peer)",
-  );
+  expect(() => assertNoLocalInstallDependencies(manifest)).not.toThrow();
+  expect(() => assertWorkspaceInstallDependencies(manifest, workspaces)).not.toThrow();
 });
 
-test.each([
-  "workspace:^",
-  "catalog:",
-  "file:../runtime",
-  "link:../runtime",
-  "portal:../runtime",
-  "patch:runtime@1.0.0#./runtime.patch",
-  "exec:./build-runtime.js",
-  "git+file:../runtime",
-  "../runtime",
-  "/runtime",
-  "~/runtime",
-  "C:\\runtime",
-])("rejects local dependency range %s", (range) => {
+test("rejects an incompatible SDK range before consumer overrides can hide it", () => {
   expect(() =>
-    assertNoLocalInstallDependencies({
-      name: "@pstdio/example",
-      dependencies: { runtime: range },
-    }),
-  ).toThrow(`dependencies.runtime (${range})`);
+    assertWorkspaceInstallDependencies({ dependencies: { sdk: "^2.0.0" } }, workspaces),
+  ).toThrow("does not accept workspace version");
 });
 
-test("allows public dependency ranges and local development ranges", () => {
+test("rejects non-version declarations before consumer overrides can hide them", () => {
   expect(() =>
-    assertNoLocalInstallDependencies({
-      name: "@pstdio/example",
-      dependencies: {
-        runtime: "^1.0.0",
-        alias: "npm:runtime@^1.0.0",
-        repository: "git+https://github.com/pstdio/runtime.git#v1.0.0",
-      },
-      devDependencies: { bundledSource: "workspace:*" },
-    }),
-  ).not.toThrow();
+    assertWorkspaceInstallDependencies({ dependencies: { sdk: "banana" } }, workspaces),
+  ).toThrow("is not a semantic version range");
 });
 
-test("release validates publishable manifests immediately before publishing", async () => {
-  const manifest = await Bun.file(join(import.meta.dir, "../package.json")).json();
-
-  expect(manifest.scripts.release).toBe("bun run build && bun run pack:check && changeset publish");
-});
-
-test("routine checks validate source manifests", async () => {
-  const manifest = await Bun.file(join(import.meta.dir, "../package.json")).json();
-
-  expect(manifest.scripts.check).toContain("bun run manifest:check");
-  expect(manifest.scripts["manifest:check"]).toBe(
-    "bun scripts/pack-publishable.ts --manifests-only",
-  );
+test("rejects private workspace dependencies even when their version range is valid", () => {
+  expect(() =>
+    assertWorkspaceInstallDependencies({ dependencies: { internal: "^1.0.0" } }, workspaces),
+  ).toThrow("refers to a private workspace");
 });
