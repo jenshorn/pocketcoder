@@ -42,71 +42,86 @@ function doctorWorkspace(id: string, state: "ready" | "canceled") {
 }
 
 describe("pcd doctor", () => {
-  test("doctor completes a correlated turn and always cancels its workspace", async () => {
-    let diagnosticPrompt = "";
-    let canceled = false;
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This single fixture router makes every doctor request explicit.
-      async fetch(request) {
-        const url = new URL(request.url);
-        if (request.method === "POST" && url.pathname === "/v1/workspaces") {
-          expect(request.headers.get("idempotency-key")).toStartWith("doctor-");
-          return Response.json(doctorWorkspace(doctorWorkspaceId, "ready"), { status: 201 });
-        }
-        if (request.method === "GET" && url.pathname === `/v1/workspaces/${doctorWorkspaceId}`) {
-          return Response.json(doctorWorkspace(doctorWorkspaceId, "ready"));
-        }
-        if (
-          request.method === "GET" &&
-          url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/status`
-        ) {
-          return Response.json({ status: "stable" });
-        }
-        if (
-          request.method === "POST" &&
-          url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/message`
-        ) {
-          const body = (await request.json()) as { content: string };
-          diagnosticPrompt = body.content;
-          return Response.json({ ok: true });
-        }
-        if (
-          request.method === "GET" &&
-          url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/messages`
-        ) {
-          return Response.json({
-            messages: [{ id: 1, role: "assistant", content: diagnosticPrompt }],
-          });
-        }
-        if (
-          request.method === "POST" &&
-          url.pathname === `/v1/workspaces/${doctorWorkspaceId}/cancel`
-        ) {
-          canceled = true;
-          return Response.json(doctorWorkspace(doctorWorkspaceId, "canceled"));
-        }
-        return new Response("not found", { status: 404 });
-      },
-    });
-    try {
-      const result = await runCli(["doctor", "--template", "fixture-echo"], {
-        env: {
-          POCKETCODER_URL: server.url.origin,
-          POCKETCODER_KEY: "doctor-key",
+  test.each([0, 2])(
+    "doctor waits through %i running statuses before sending and cancels",
+    async (runningReads) => {
+      let diagnosticPrompt = "";
+      let canceled = false;
+      let statusReads = 0;
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This single fixture router makes every doctor request explicit.
+        async fetch(request) {
+          const url = new URL(request.url);
+          if (request.method === "POST" && url.pathname === "/v1/workspaces") {
+            expect(request.headers.get("idempotency-key")).toStartWith("doctor-");
+            return Response.json(doctorWorkspace(doctorWorkspaceId, "ready"), { status: 201 });
+          }
+          if (request.method === "GET" && url.pathname === `/v1/workspaces/${doctorWorkspaceId}`) {
+            return Response.json(doctorWorkspace(doctorWorkspaceId, "ready"));
+          }
+          if (
+            request.method === "GET" &&
+            url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/status`
+          ) {
+            statusReads += 1;
+            return Response.json({ status: statusReads <= runningReads ? "running" : "stable" });
+          }
+          if (
+            request.method === "POST" &&
+            url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/message`
+          ) {
+            if (statusReads <= runningReads) {
+              return new Response(
+                "message can only be sent when the agent is waiting for user input",
+                { status: 500 },
+              );
+            }
+            const body = (await request.json()) as { content: string };
+            diagnosticPrompt = body.content;
+            return Response.json({ ok: true });
+          }
+          if (
+            request.method === "GET" &&
+            url.pathname === `/v1/workspaces/${doctorWorkspaceId}/agent/messages`
+          ) {
+            return Response.json({
+              messages: [{ id: 1, role: "assistant", content: diagnosticPrompt }],
+            });
+          }
+          if (
+            request.method === "POST" &&
+            url.pathname === `/v1/workspaces/${doctorWorkspaceId}/cancel`
+          ) {
+            canceled = true;
+            return Response.json(doctorWorkspace(doctorWorkspaceId, "canceled"));
+          }
+          return new Response("not found", { status: 404 });
         },
       });
-      expect(result.exitCode).toBe(0);
-      expect(result.output).toContain("doctor: correlated agent response received");
-      expect(result.output).toContain("doctor: ok");
-      expect(canceled).toBe(true);
-    } finally {
-      await server.stop(true);
-    }
-  });
+      try {
+        const result = await runCli(["doctor", "--template", "fixture-echo"], {
+          env: {
+            POCKETCODER_URL: server.url.origin,
+            POCKETCODER_KEY: "doctor-key",
+          },
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.output).toContain("doctor: correlated agent response received");
+        expect(result.output).toContain("doctor: ok");
+        expect(canceled).toBe(true);
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
 
-  test("doctor rejects a status-only harness and still cancels", async () => {
+  test.each([
+    ["stable", "agent message probe failed (404)"],
+    ["running", "agent did not become stable within 1 seconds"],
+    ["unknown", "agent status probe returned unknown status"],
+  ])("doctor rejects a %s status-only harness and still cancels", async (status, error) => {
     let canceled = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
@@ -126,7 +141,7 @@ describe("pcd doctor", () => {
           request.method === "GET" &&
           url.pathname === `/v1/workspaces/${statusOnlyWorkspaceId}/agent/status`
         ) {
-          return Response.json({ status: "stable" });
+          return Response.json({ status });
         }
         if (
           request.method === "POST" &&
@@ -149,7 +164,7 @@ describe("pcd doctor", () => {
         },
       );
       expect(result.exitCode).toBe(1);
-      expect(result.output).toContain("agent message probe failed (404)");
+      expect(result.output).toContain(error);
       expect(canceled).toBe(true);
     } finally {
       await server.stop(true);
