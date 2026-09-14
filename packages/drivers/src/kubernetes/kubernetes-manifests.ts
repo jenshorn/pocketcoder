@@ -15,8 +15,7 @@ interface ManifestOptions {
   tolerations?: KubernetesToleration[];
 }
 
-function volumeForMount(mount: RuntimeMountRef, index: number) {
-  const name = `persistent-${index}`;
+function volumeForMount(mount: RuntimeMountRef, name: string) {
   if (mount.source.kind === "pvc") {
     return {
       volume: { name, persistentVolumeClaim: { claimName: mount.source.claimName } },
@@ -32,6 +31,24 @@ function volumeForMount(mount: RuntimeMountRef, index: number) {
     volume: { name, hostPath: { path: mount.source.path, type: "Directory" } },
     mount: { name, mountPath: mount.target, readOnly: mount.readOnly ?? false },
   };
+}
+
+function persistentVolumes(mounts: RuntimeMountRef[]) {
+  const claims = new Map<string, string>();
+  const volumes: ReturnType<typeof volumeForMount>["volume"][] = [];
+  const volumeMounts = mounts.map((mount, index) => {
+    const existing = mount.source.kind === "pvc" ? claims.get(mount.source.claimName) : undefined;
+    const rendered = volumeForMount(mount, existing ?? `persistent-${index}`);
+    if (!existing) {
+      volumes.push(rendered.volume);
+      if (mount.source.kind === "pvc") {
+        // CSI identifies the backing volume once, so each claim needs one Pod volume.
+        claims.set(mount.source.claimName, rendered.volume.name);
+      }
+    }
+    return rendered.mount;
+  });
+  return { volumes, volumeMounts };
 }
 
 function volumeForSecret(secret: RuntimeSecretRef, index: number) {
@@ -114,7 +131,7 @@ export function workspaceJobManifest(
   const { workspace } = launch;
   const spec = workspace.templateSnapshot.spec;
   const restricted = spec.network.mode === "restricted";
-  const persistent = launch.mounts.map(volumeForMount);
+  const persistent = persistentVolumes(launch.mounts);
   const secrets = launch.secrets.map(volumeForSecret);
   const memory = memoryVolumes(spec.security.writableMemoryPaths);
   const labels = { [KUBERNETES_WORKSPACE_LABEL]: workspace.id };
@@ -164,7 +181,7 @@ export function workspaceJobManifest(
                   subPath: "input.json",
                   readOnly: true,
                 },
-                ...persistent.map((item) => item.mount),
+                ...persistent.volumeMounts,
                 ...secrets.map((item) => item.mount),
                 ...memory.map((item) => item.mount),
               ],
@@ -173,7 +190,7 @@ export function workspaceJobManifest(
           volumes: [
             providerInputVolume(inputSecret),
             ...(restricted ? [egressVolume(egressSecret)] : []),
-            ...persistent.map((item) => item.volume),
+            ...persistent.volumes,
             ...secrets.map((item) => item.volume),
             ...memory.map((item) => item.volume),
           ],
