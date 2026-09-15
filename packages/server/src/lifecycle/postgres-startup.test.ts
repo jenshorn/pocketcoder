@@ -7,7 +7,9 @@ import { loadConfig } from "../config/config";
 import { startPocketCoderServer } from "./lifecycle";
 
 const databaseUrl = process.env.POCKETCODER_TEST_DATABASE_URL;
-const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+const dockerAvailable =
+  Bun.which("docker") !== null &&
+  Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
 describe.skipIf(!databaseUrl || !dockerAvailable)("PostgreSQL server lifecycle", () => {
   test.each([false, true])("starts and drains shutdown work (legacy=%s)", async (legacy) => {
