@@ -40,7 +40,7 @@ async function removeStorageRoot(root: string) {
 }
 
 describe.skipIf(!databaseUrl)("PostgreSQL persistence routes", () => {
-  test("preserve and restore keep operation foreign-key targets valid", async () => {
+  test("preserve and restore legacy records keep operation foreign-key targets valid", async () => {
     const schema = `pkt_routes_${randomUUID().slice(0, 8)}`;
     const sql = new SQL(databaseUrl as string);
     const root = await mkdtemp(join(tmpdir(), "pocketcoder-postgres-routes-"));
@@ -132,6 +132,13 @@ describe.skipIf(!databaseUrl)("PostgreSQL persistence routes", () => {
       await mkdir(join(sourceRoot, "worktree"), { recursive: true });
       await writeFile(join(sourceRoot, "worktree", "state.txt"), "preserved\n");
 
+      // Reproduce the extra JSON-string layer written by 0.7.1 before preserve.
+      await sql.unsafe(`UPDATE "${schema}".workspaces SET
+        template_snapshot = to_jsonb(template_snapshot::text), metadata = to_jsonb(metadata::text),
+        health = to_jsonb(health::text), provider_ref = to_jsonb(provider_ref::text)`);
+      await sql.unsafe(`UPDATE "${schema}".workspace_storage SET
+        provider_ref = to_jsonb(provider_ref::text), mount_manifest = to_jsonb(mount_manifest::text)`);
+
       const preserveResponse = await request(`/v1/workspaces/${created.id}/preserve`, {
         method: "POST",
         headers: { "idempotency-key": "postgres-preserve" },
@@ -146,6 +153,10 @@ describe.skipIf(!databaseUrl)("PostgreSQL persistence routes", () => {
       const preserveOperation = await store.getOperation(preserved.operation.id);
       expect(preserveOperation?.checkpointId).toBe(preserved.checkpoint.id);
       expect(await store.getCheckpoint(preserveOperation?.checkpointId ?? "")).not.toBeNull();
+
+      await sql.unsafe(`UPDATE "${schema}".workspace_checkpoints SET
+        provider_ref = to_jsonb(provider_ref::text), template_snapshot = to_jsonb(template_snapshot::text),
+        manifest = to_jsonb(manifest::text)`);
 
       const restoreResponse = await request(`/v1/checkpoints/${preserved.checkpoint.id}/restore`, {
         method: "POST",

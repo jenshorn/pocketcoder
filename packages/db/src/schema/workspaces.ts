@@ -15,7 +15,6 @@ import {
   check,
   index,
   integer,
-  jsonb,
   primaryKey,
   text,
   unique,
@@ -23,6 +22,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { sqlValues, timestamptz } from "./columns";
+import { structuredJson } from "./structured-json";
 
 const terminalStates = sqlValues(TERMINAL_STATES);
 
@@ -50,7 +50,9 @@ export function createWorkspaceTables(
       templateName: text("template_name").notNull(),
       templateVersion: text("template_version").notNull(),
       templateDigest: text("template_digest").notNull(),
-      templateSnapshot: jsonb("template_snapshot").$type<NonNullable<WorkspaceRow["templateSnapshot"]>>().notNull(),
+      templateSnapshot: structuredJson("template_snapshot")
+        .$type<NonNullable<WorkspaceRow["templateSnapshot"]>>()
+        .notNull(),
       state: text("state").$type<NonNullable<WorkspaceRow["state"]>>().notNull(),
       reasonCode: text("reason_code").$type<NonNullable<WorkspaceRow["reasonCode"]>>(),
       agentState: text("agent_state").$type<NonNullable<WorkspaceRow["agentState"]>>().notNull().default("unknown"),
@@ -64,9 +66,9 @@ export function createWorkspaceTables(
       failureLogTailTruncated: boolean("failure_log_tail_truncated").notNull().default(false),
       failureLastLogSeq: bigint("failure_last_log_seq", { mode: "number" }),
       terminalIntent: text("terminal_intent").$type<NonNullable<WorkspaceRow["terminalIntent"]>>(),
-      launchInput: jsonb("launch_input").$type<NonNullable<WorkspaceRow["launchInput"]>>(),
+      launchInput: structuredJson("launch_input").$type<NonNullable<WorkspaceRow["launchInput"]>>(),
       providerKind: text("provider_kind"),
-      providerRef: jsonb("provider_ref").$type<NonNullable<WorkspaceRow["providerRef"]>>(),
+      providerRef: structuredJson("provider_ref").$type<NonNullable<WorkspaceRow["providerRef"]>>(),
       provisioningMode: text("provisioning_mode").$type<NonNullable<WorkspaceRow["provisioningMode"]>>(),
       registrationDigest: bytea("registration_digest").$type<Uint8Array>(),
       registrationExpiresAt: timestamptz("registration_expires_at"),
@@ -77,23 +79,23 @@ export function createWorkspaceTables(
       readyAt: timestamptz("ready_at"),
       lastActivityAt: timestamptz("last_activity_at"),
       launchAttempts: integer("launch_attempts").notNull().default(0),
-      health: jsonb("health").$type<NonNullable<WorkspaceRow["health"]>>().notNull().default({}),
-      metadata: jsonb("metadata").$type<NonNullable<WorkspaceRow["metadata"]>>().notNull().default({}),
+      health: structuredJson("health").$type<NonNullable<WorkspaceRow["health"]>>().notNull().default({}),
+      metadata: structuredJson("metadata").$type<NonNullable<WorkspaceRow["metadata"]>>().notNull().default({}),
       deadlineAt: timestamptz("deadline_at").notNull(),
       createdAt: timestamptz("created_at").notNull(),
       updatedAt: timestamptz("updated_at").notNull(),
       terminalAt: timestamptz("terminal_at"),
       originWorkspaceId: uuid("origin_workspace_id"),
       restoredFromCheckpointId: uuid("restored_from_checkpoint_id"),
-      sourceDescriptor: jsonb("source_descriptor").$type<NonNullable<WorkspaceRow["sourceDescriptor"]>>(),
-      resolvedSource: jsonb("resolved_source").$type<NonNullable<WorkspaceRow["resolvedSource"]>>(),
+      sourceDescriptor: structuredJson("source_descriptor").$type<NonNullable<WorkspaceRow["sourceDescriptor"]>>(),
+      resolvedSource: structuredJson("resolved_source").$type<NonNullable<WorkspaceRow["resolvedSource"]>>(),
       persistenceCapability: text("persistence_capability")
         .$type<NonNullable<WorkspaceRow["persistenceCapability"]>>()
         .notNull()
         .default("filesystem_only"),
       latestCheckpointId: uuid("latest_checkpoint_id"),
       launchMode: text("launch_mode").$type<NonNullable<WorkspaceRow["launchMode"]>>().notNull().default("create"),
-      outputs: jsonb("outputs").$type<NonNullable<WorkspaceRow["outputs"]>>().notNull().default({}),
+      outputs: structuredJson("outputs").$type<NonNullable<WorkspaceRow["outputs"]>>().notNull().default({}),
     },
     (table) => [
       check("workspaces_state_check", sql`${table.state} IN ${sqlValues(WORKSPACE_STATES)}`),
@@ -193,7 +195,7 @@ export function createWorkspaceTables(
       driverKind: text("driver_kind").notNull(),
       eligibilityFingerprint: text("eligibility_fingerprint").notNull(),
       state: text("state").$type<NonNullable<WarmPoolRuntimeRow["state"]>>().notNull(),
-      providerRef: jsonb("provider_ref").$type<NonNullable<WarmPoolRuntimeRow["providerRef"]>>(),
+      providerRef: structuredJson("provider_ref").$type<NonNullable<WarmPoolRuntimeRow["providerRef"]>>(),
       enrollmentDigest: bytea("enrollment_digest").$type<Uint8Array>(),
       enrollmentExpiresAt: timestamptz("enrollment_expires_at"),
       workspaceId: uuid("workspace_id").references(() => workspaces.id),

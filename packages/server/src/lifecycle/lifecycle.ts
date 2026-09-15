@@ -266,8 +266,9 @@ export async function startPocketCoderServer(
     const url = `http://${healthHost}:${server.port}`;
     log(`listening on http://${config.listenHost}:${server.port}`);
     log(`workspaces reach this server at ${config.workspaceServerUrl}`);
-    if (warmPool)
-      void warmPool.reconcile().catch((error) => log(`warm pool initial reconcile failed: ${String(error)}`));
+    const initialWarmPool = warmPool
+      ?.reconcile()
+      .catch((error) => log(`warm pool initial reconcile failed: ${String(error)}`));
 
     let stopPromise: Promise<void> | null = null;
     return {
@@ -282,6 +283,8 @@ export async function startPocketCoderServer(
           clearInterval(retentionTimer);
           if (warmPoolTimer) clearInterval(warmPoolTimer);
           await server.stop(true);
+          // Initial reconciliation still owns store queries after listen succeeds.
+          await initialWarmPool;
           await store.close();
         })();
         return stopPromise;
