@@ -16,7 +16,6 @@ import {
   check,
   index,
   integer,
-  jsonb,
   type PgTableFn,
   pgTable,
   text,
@@ -26,6 +25,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { createAccessTables } from "./access";
 import { sqlValues, timestamptz } from "./columns";
+import { structuredJson } from "./structured-json";
 import type { createWorkspaceTables } from "./workspaces";
 
 export function createPersistenceTables(
@@ -44,9 +44,11 @@ export function createPersistenceTables(
         .notNull()
         .references(() => principals.id),
       providerKind: text("provider_kind").notNull(),
-      providerRef: jsonb("provider_ref").$type<NonNullable<WorkspaceStorageRow["providerRef"]>>().notNull(),
+      providerRef: structuredJson("provider_ref").$type<NonNullable<WorkspaceStorageRow["providerRef"]>>().notNull(),
       state: text("state").$type<NonNullable<WorkspaceStorageRow["state"]>>().notNull(),
-      mountManifest: jsonb("mount_manifest").$type<NonNullable<WorkspaceStorageRow["mountManifest"]>>().notNull(),
+      mountManifest: structuredJson("mount_manifest")
+        .$type<NonNullable<WorkspaceStorageRow["mountManifest"]>>()
+        .notNull(),
       logicalBytes: bigint("logical_bytes", { mode: "number" }),
       fileCount: bigint("file_count", { mode: "number" }),
       retainedUntil: timestamptz("retained_until"),
@@ -82,13 +84,14 @@ export function createPersistenceTables(
       state: text("state").$type<NonNullable<WorkspaceCheckpointRow["state"]>>().notNull(),
       reasonCode: text("reason_code").$type<NonNullable<WorkspaceCheckpointRow["reasonCode"]>>(),
       providerKind: text("provider_kind").notNull(),
-      providerRef: jsonb("provider_ref").$type<NonNullable<WorkspaceCheckpointRow["providerRef"]>>(),
-      templateSnapshot: jsonb("template_snapshot")
+      providerRef: structuredJson("provider_ref").$type<NonNullable<WorkspaceCheckpointRow["providerRef"]>>(),
+      templateSnapshot: structuredJson("template_snapshot")
         .$type<NonNullable<WorkspaceCheckpointRow["templateSnapshot"]>>()
         .notNull(),
       templateDigest: text("template_digest").notNull(),
-      sourceProvenance: jsonb("source_provenance").$type<NonNullable<WorkspaceCheckpointRow["sourceProvenance"]>>(),
-      manifest: jsonb("manifest").$type<NonNullable<WorkspaceCheckpointRow["manifest"]>>(),
+      sourceProvenance:
+        structuredJson("source_provenance").$type<NonNullable<WorkspaceCheckpointRow["sourceProvenance"]>>(),
+      manifest: structuredJson("manifest").$type<NonNullable<WorkspaceCheckpointRow["manifest"]>>(),
       manifestDigest: text("manifest_digest"),
       logicalBytes: bigint("logical_bytes", { mode: "number" }),
       storedBytes: bigint("stored_bytes", { mode: "number" }),

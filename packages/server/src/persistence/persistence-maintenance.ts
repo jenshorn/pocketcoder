@@ -3,6 +3,7 @@ import { ApiError, digestOf, type RestoreRequest } from "@pstdio/pocketcoder-con
 import type { PrincipalRow, StorageRef, WorkspaceOperationRow } from "@pstdio/pocketcoder-runtime-core";
 
 import type { PersistenceContext } from "./persistence-base";
+import { cleanupPreservedStorage } from "./persistence-cleanup";
 
 export class PersistenceMaintenanceService {
   constructor(private readonly context: PersistenceContext) {}
@@ -58,6 +59,12 @@ export class PersistenceMaintenanceService {
           );
         }
       }
+      // Deleted checkpoint rows also find allocations left by older servers or
+      // interrupted cleanup. Retry from metadata even if physical deletion finished.
+      const deletedCheckpoints = await this.context.deps.store.listCheckpoints(principal.id, { state: "deleted" });
+      for (const storageId of new Set(deletedCheckpoints.map((checkpoint) => checkpoint.storageId))) {
+        await cleanupPreservedStorage(this.context, storageId);
+      }
     }
     return { deleted, skipped, transcriptsDeleted };
   }
@@ -103,7 +110,13 @@ export class PersistenceMaintenanceService {
       requestDigest,
       "Changed delete request.",
     );
-    if (replay) return replay;
+    if (replay) {
+      if (replay.state === "succeeded") {
+        const checkpoint = await this.context.deps.store.getCheckpoint(checkpointId);
+        if (checkpoint) await cleanupPreservedStorage(this.context, checkpoint.storageId);
+      }
+      return replay;
+    }
     const checkpoint = await this.context.getCheckpointOwned(principal, checkpointId);
     const activeRestore = (await this.context.deps.store.listIncompleteOperations()).some(
       (operation) => operation.kind === "restore" && operation.checkpointId === checkpoint.id,
@@ -149,6 +162,7 @@ export class PersistenceMaintenanceService {
     } catch {
       await this.context.failOperation(inserted.operation.id, "checkpoint_failed");
     }
+    await cleanupPreservedStorage(this.context, checkpoint.storageId);
     return (await this.context.deps.store.getOperation(inserted.operation.id)) ?? inserted.operation;
   }
 }

@@ -2,6 +2,7 @@ import type { WorkspaceOutputRow } from "@pstdio/pocketcoder-runtime-contracts";
 import { asc, eq, sql } from "drizzle-orm";
 import { type DatabaseContext, lock } from "../../database/context";
 import { requiredRow } from "../../database/required-row";
+import { structuredJsonValue } from "../../schema/structured-json";
 
 export function createOutputs({ db, tables: { workspaceOutputs: outputs, workspaces } }: DatabaseContext) {
   return {
@@ -17,7 +18,7 @@ export function createOutputs({ db, tables: { workspaceOutputs: outputs, workspa
         await tx
           .update(workspaces)
           .set({
-            outputs: sql`${workspaces.outputs} || jsonb_build_object(${input.name}::text, ${sql.param(input.value, outputs.value)}::jsonb)`,
+            outputs: sql`${structuredJsonValue(workspaces.outputs)} || jsonb_build_object(${input.name}::text, ${sql.param(input.value, outputs.value)}::jsonb)`,
             updatedAt: input.occurredAt,
           })
           .where(eq(workspaces.id, input.workspaceId));
