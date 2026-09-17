@@ -209,32 +209,46 @@ export class KubernetesDriver implements WorkspaceDriver {
   }
 
   async inspect(ref: ProviderRef): Promise<ProviderState> {
-    try {
-      const output = await kubectl(this.kubectlBin, this.namespace, ["get", "job", ref.id, "-o", "json"]);
-      const job = JSON.parse(output) as {
-        status?: { active?: number; succeeded?: number; failed?: number };
-      };
-      const running = (job.status?.active ?? 0) > 0;
-      const completedExitCode = job.status?.succeeded ? 0 : 1;
-      return {
-        exists: true,
-        running,
-        exitCode: running || !(job.status?.succeeded || job.status?.failed) ? null : completedExitCode,
-      };
-    } catch {
-      return { exists: false, running: false, exitCode: null };
-    }
+    const output = await kubectl(this.kubectlBin, this.namespace, [
+      "get",
+      "job",
+      ref.id,
+      "--ignore-not-found",
+      "-o",
+      "json",
+    ]);
+    if (!output) return { exists: false, running: false, exitCode: null };
+    const job = JSON.parse(output) as {
+      status?: { active?: number; succeeded?: number; failed?: number };
+    };
+    const running = (job.status?.active ?? 0) > 0;
+    const completedExitCode = job.status?.succeeded ? 0 : 1;
+    return {
+      exists: true,
+      running,
+      exitCode: running || !(job.status?.succeeded || job.status?.failed) ? null : completedExitCode,
+    };
   }
 
   async stop(ref: ProviderRef, graceSeconds: number): Promise<void> {
-    await kubectl(this.kubectlBin, this.namespace, [
-      "patch",
+    const job = await kubectl(this.kubectlBin, this.namespace, [
+      "get",
       "job",
       ref.id,
-      "--type=merge",
-      "-p",
-      '{"spec":{"suspend":true}}',
-    ]).catch(() => {});
+      "--ignore-not-found",
+      "-o",
+      "name",
+    ]);
+    if (job) {
+      await kubectl(this.kubectlBin, this.namespace, [
+        "patch",
+        "job",
+        ref.id,
+        "--type=merge",
+        "-p",
+        '{"spec":{"suspend":true}}',
+      ]);
+    }
     await kubectl(this.kubectlBin, this.namespace, [
       "delete",
       "pod",
@@ -243,7 +257,7 @@ export class KubernetesDriver implements WorkspaceDriver {
       `--grace-period=${graceSeconds}`,
       "--wait=true",
       "--ignore-not-found",
-    ]).catch(() => {});
+    ]);
   }
 
   async remove(ref: ProviderRef): Promise<void> {
@@ -252,19 +266,13 @@ export class KubernetesDriver implements WorkspaceDriver {
       "job",
       ref.id,
       "--ignore-not-found",
+      "--cascade=foreground",
       "--wait=true",
-    ]).catch(() => {});
+    ]);
     const inputSecret = typeof ref.inputSecret === "string" ? ref.inputSecret : `${ref.id}-input`;
-    await kubectl(this.kubectlBin, this.namespace, ["delete", "secret", inputSecret, "--ignore-not-found"]).catch(
-      () => {},
-    );
+    await kubectl(this.kubectlBin, this.namespace, ["delete", "secret", inputSecret, "--ignore-not-found"]);
     if (typeof ref.egressSecret === "string") {
-      await kubectl(this.kubectlBin, this.namespace, [
-        "delete",
-        "secret",
-        ref.egressSecret,
-        "--ignore-not-found",
-      ]).catch(() => {});
+      await kubectl(this.kubectlBin, this.namespace, ["delete", "secret", ref.egressSecret, "--ignore-not-found"]);
     }
   }
 

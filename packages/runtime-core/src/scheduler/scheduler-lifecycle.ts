@@ -58,6 +58,16 @@ export class SchedulerLifecycle {
         });
       } catch (err) {
         this.context.report(`finalize.terminate.${row.id}`, err);
+        // Keep the provider reference and capacity until a later sweep can
+        // finish termination. Storage may still be mounted by this provider.
+        await store.transition(row.id, {
+          from: ["provisioning", "connected", "ready"],
+          to: "terminating",
+          reason,
+          at,
+          patch: { terminalIntent: terminalState, registrationDigest: null },
+        });
+        return;
       }
     }
     if (retainStorage) {

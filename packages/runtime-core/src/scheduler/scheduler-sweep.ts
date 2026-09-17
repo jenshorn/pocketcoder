@@ -84,7 +84,11 @@ export class SchedulerSweep {
     // grace periods.
     const stuckMs = 4 * this.context.timeoutMs(row, "terminateGrace") + 5000;
     if (now.getTime() - row.updatedAt.getTime() <= stuckMs) return;
-    await this.lifecycle.finalize(row, (row.terminalIntent ?? "failed") as WorkspaceState, row.reasonCode, now);
+    const terminalState = (row.terminalIntent ?? "failed") as WorkspaceState;
+    const retainStorage =
+      terminalState === "failed" &&
+      row.templateSnapshot.spec.persistence.checkpoint.onFailure === "retain-for-recovery";
+    await this.lifecycle.finalize(row, terminalState, row.reasonCode, now, retainStorage);
   }
 
   async sweepRow(row: WorkspaceRow, now: Date): Promise<void> {
@@ -96,8 +100,8 @@ export class SchedulerSweep {
         if (row.registrationExpiresAt && now >= row.registrationExpiresAt) {
           if (row.provisioningMode === "warm" && row.launchAttempts < this.context.deps.limits.maxLaunchAttempts) {
             if (row.providerRef) {
-              await this.context.deps.driver.stop(row.providerRef as never, 1).catch(() => {});
-              await this.context.deps.driver.remove(row.providerRef as never).catch(() => {});
+              await this.context.deps.driver.stop(row.providerRef as never, 1);
+              await this.context.deps.driver.remove(row.providerRef as never);
             }
             await this.context.deps.store.transition(row.id, {
               from: ["provisioning"],
