@@ -1,0 +1,227 @@
+export const EVIDENCE_FINALIZER = "pocketcoder.dev/termination-evidence";
+export const EVIDENCE_ANNOTATION = "pocketcoder.dev/termination-evidence";
+const NODE_ANNOTATION = "pocketcoder.dev/termination-node";
+
+type Command = (args: string[]) => Promise<string>;
+interface Metadata {
+  name?: string;
+  uid?: string;
+  resourceVersion?: string;
+  deletionTimestamp?: string;
+  annotations?: Record<string, string>;
+  labels?: Record<string, string>;
+  finalizers?: string[];
+  ownerReferences?: { uid: string; kind: string; controller?: boolean }[];
+}
+interface ContainerStatus {
+  name: string;
+  containerID?: string;
+  state: { terminated?: { exitCode: number; finishedAt?: string; containerID?: string; reason?: string } };
+}
+interface Resource {
+  metadata: Metadata;
+  spec: {
+    nodeName?: string;
+    providerID?: string;
+    suspend?: boolean;
+    containers?: { name: string }[];
+    initContainers?: { name: string }[];
+    ephemeralContainers?: { name: string }[];
+  };
+  status?: {
+    conditions?: { type: string; status: string }[];
+    containerStatuses?: ContainerStatus[];
+    initContainerStatuses?: ContainerStatus[];
+    ephemeralContainerStatuses?: ContainerStatus[];
+  };
+}
+
+async function patch(run: Command, kind: string, name: string, value: unknown) {
+  await run(["patch", kind, name, "--type=merge", "-p", JSON.stringify(value)]);
+}
+
+async function podsFor(run: Command, name: string) {
+  const result = JSON.parse(await run(["get", "pods", "-l", `job-name=${name}`, "-o", "json"])) as {
+    items: Resource[];
+  };
+  return result.items;
+}
+
+function owned(pod: Resource, uid: string) {
+  return pod.metadata.ownerReferences?.some((owner) => owner.uid === uid && owner.kind === "Job" && owner.controller);
+}
+
+function stopped(pod: Resource) {
+  const groups = [
+    [pod.spec.containers, pod.status?.containerStatuses],
+    [pod.spec.initContainers, pod.status?.initContainerStatuses],
+    [pod.spec.ephemeralContainers, pod.status?.ephemeralContainerStatuses],
+  ] as const;
+  if (!pod.spec.containers?.length) return false;
+  return groups.every(
+    ([spec, statuses]) =>
+      (spec?.length ?? 0) === (statuses?.length ?? 0) &&
+      (spec ?? []).every((container) => {
+        const status = statuses?.find((candidate) => candidate.name === container.name);
+        return (
+          status?.containerID &&
+          status.state.terminated?.containerID === status.containerID &&
+          !["ContainerStatusUnknown", "NodeLost"].includes(status.state.terminated?.reason ?? "") &&
+          status.state.terminated?.finishedAt &&
+          Number.isInteger(status.state.terminated.exitCode)
+        );
+      }),
+  );
+}
+
+function podEvidence(pod: Resource) {
+  // Never persist launch environment, volumes or delegated input in evidence.
+  return {
+    metadata: { uid: pod.metadata.uid, ownerReferences: pod.metadata.ownerReferences },
+    spec: {
+      nodeName: pod.spec.nodeName,
+      containers: pod.spec.containers?.map(({ name }) => ({ name })),
+      initContainers: pod.spec.initContainers?.map(({ name }) => ({ name })),
+      ephemeralContainers: pod.spec.ephemeralContainers?.map(({ name }) => ({ name })),
+    },
+    status: {
+      containerStatuses: statusEvidence(pod.status?.containerStatuses),
+      initContainerStatuses: statusEvidence(pod.status?.initContainerStatuses),
+      ephemeralContainerStatuses: statusEvidence(pod.status?.ephemeralContainerStatuses),
+    },
+  };
+}
+
+function statusEvidence(statuses: ContainerStatus[] | undefined) {
+  return statuses?.map((status) => ({
+    name: status.name,
+    containerID: status.containerID,
+    state: {
+      terminated: {
+        exitCode: status.state.terminated?.exitCode,
+        finishedAt: status.state.terminated?.finishedAt,
+        containerID: status.state.terminated?.containerID,
+        reason: status.state.terminated?.reason,
+      },
+    },
+  }));
+}
+
+async function retain(run: Command, pod: Resource) {
+  if (!pod.metadata.name || !pod.metadata.uid || !pod.spec.nodeName)
+    throw new Error("Termination evidence unavailable");
+  const cached = pod.metadata.annotations?.[NODE_ANNOTATION];
+  const node = cached
+    ? (JSON.parse(cached) as Resource)
+    : (JSON.parse(await run(["get", "node", pod.spec.nodeName, "-o", "json"])) as Resource);
+  if (!node.metadata.uid || !node.spec.providerID) throw new Error("Termination node identity unavailable");
+  const identity = {
+    metadata: { uid: node.metadata.uid, deletionTimestamp: node.metadata.deletionTimestamp },
+    spec: { providerID: node.spec.providerID },
+    status: { conditions: node.status?.conditions?.filter((condition) => condition.type === "Ready") },
+  };
+  await patch(run, "pod", pod.metadata.name, {
+    metadata: {
+      uid: pod.metadata.uid,
+      resourceVersion: pod.metadata.resourceVersion,
+      finalizers: [...new Set([...(pod.metadata.finalizers ?? []), EVIDENCE_FINALIZER])],
+      annotations: { [NODE_ANNOTATION]: JSON.stringify(identity) },
+    },
+  });
+  return identity;
+}
+
+async function releasePods(run: Command, name: string, jobUid: string) {
+  for (const pod of await podsFor(run, name)) {
+    if (!owned(pod, jobUid) || !pod.metadata.finalizers?.includes(EVIDENCE_FINALIZER)) continue;
+    await patch(run, "pod", pod.metadata.name as string, {
+      metadata: {
+        uid: pod.metadata.uid,
+        resourceVersion: pod.metadata.resourceVersion,
+        finalizers: pod.metadata.finalizers.filter((item) => item !== EVIDENCE_FINALIZER),
+      },
+    });
+  }
+}
+
+async function stoppedJob(run: Command, name: string, uid: string, deadline: number): Promise<Resource> {
+  while (true) {
+    const job = JSON.parse(await run(["get", "job", name, "-o", "json"])) as Resource;
+    if (job.metadata.uid !== uid) throw new Error("Termination provider changed");
+    const conditions = job.status?.conditions ?? [];
+    const terminal = conditions.some((item) => ["Complete", "Failed"].includes(item.type) && item.status === "True");
+    const suspended =
+      job.spec.suspend && conditions.some((item) => item.type === "Suspended" && item.status === "True");
+    if (terminal || suspended) return job;
+    if (Date.now() >= deadline) throw new Error("Job suspension unconfirmed");
+    await Bun.sleep(100);
+  }
+}
+
+export async function captureTermination(run: Command, name: string, graceSeconds: number) {
+  const output = await run(["get", "job", name, "--ignore-not-found", "-o", "json"]);
+  if (!output) return; // An earlier durable proof may already be on the workspace.
+  const job = JSON.parse(output) as Resource;
+  if (!job.metadata.uid) throw new Error("Termination evidence unavailable");
+  if (job.metadata.annotations?.[EVIDENCE_ANNOTATION]) {
+    await releasePods(run, name, job.metadata.uid);
+    return;
+  }
+  const initial = await podsFor(run, name);
+  if (!initial.length || initial.some((pod) => !owned(pod, job.metadata.uid as string)))
+    throw new Error("Termination evidence unavailable");
+  const nodes: Record<string, unknown> = {};
+  for (const pod of initial) nodes[pod.spec.nodeName as string] = await retain(run, pod);
+  await patch(run, "job", name, { metadata: { uid: job.metadata.uid }, spec: { suspend: true } });
+  const confirmed = await stoppedJob(run, name, job.metadata.uid, Date.now() + (graceSeconds + 5) * 1000);
+  const retained = await podsFor(run, name);
+  if (
+    retained.length !== initial.length ||
+    retained.some((pod) => !initial.some((old) => old.metadata.uid === pod.metadata.uid))
+  )
+    throw new Error("Termination provider changed");
+  await run([
+    "delete",
+    "pod",
+    "-l",
+    `job-name=${name}`,
+    `--grace-period=${graceSeconds}`,
+    "--wait=false",
+    "--ignore-not-found",
+  ]);
+  const deadline = Date.now() + (graceSeconds + 5) * 1000;
+  while (true) {
+    const pods = await podsFor(run, name);
+    if (
+      pods.length !== retained.length ||
+      pods.some((pod) => !retained.some((old) => old.metadata.uid === pod.metadata.uid))
+    )
+      throw new Error("Termination provider disappeared without evidence");
+    if (pods.every(stopped)) {
+      const proof = {
+        job: {
+          metadata: { uid: job.metadata.uid, labels: job.metadata.labels },
+          spec: { suspend: confirmed.spec.suspend },
+          status: { conditions: confirmed.status?.conditions },
+        },
+        pods: pods.map(podEvidence),
+        nodes,
+      };
+      await patch(run, "job", name, {
+        metadata: { uid: job.metadata.uid, annotations: { [EVIDENCE_ANNOTATION]: JSON.stringify(proof) } },
+      });
+      await releasePods(run, name, job.metadata.uid);
+      return;
+    }
+    if (Date.now() >= deadline) throw new Error("Termination evidence unavailable");
+    await Bun.sleep(100);
+  }
+}
+
+export async function readTerminationEvidence(run: Command, name: string): Promise<Record<string, unknown> | null> {
+  const output = await run(["get", "job", name, "--ignore-not-found", "-o", "json"]);
+  if (!output) return null;
+  const job = JSON.parse(output) as Resource;
+  const value = job.metadata.annotations?.[EVIDENCE_ANNOTATION];
+  return value ? (JSON.parse(value) as Record<string, unknown>) : null;
+}

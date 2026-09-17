@@ -78,6 +78,7 @@ export interface SchedulerDeps {
   // URL workspaces use to reach this server (may differ from listen addr).
   workspaceServerUrl: string;
   warmPool?: WarmPoolManager;
+  authorizeLaunch?: (workspace: WorkspaceRow) => Promise<boolean>;
   preserveByPolicy?: (row: WorkspaceRow, trigger: "idle" | "deadline" | "clean_exit" | "failure") => Promise<boolean>;
   now?: () => Date;
   onError?: (context: string, err: unknown) => void;

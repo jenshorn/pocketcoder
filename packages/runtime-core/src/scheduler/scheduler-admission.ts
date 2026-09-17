@@ -96,8 +96,19 @@ export class SchedulerAdmission {
     }
   }
 
+  private async authorized(row: WorkspaceRow): Promise<boolean> {
+    if (!this.context.deps.authorizeLaunch) return true;
+    try {
+      return (await this.context.deps.authorizeLaunch(row)) === true;
+    } catch {
+      this.context.report(`admit.policy.${row.id}`, new Error("Launch policy unavailable"));
+      return false;
+    }
+  }
+
   async launch(row: WorkspaceRow): Promise<boolean> {
     const { store, driver, secrets } = this.context.deps;
+    if (!(await this.authorized(row))) return false;
     const now = this.context.now();
     const secret = secrets.generate();
     const registrationDigest = secrets.digest(secret);

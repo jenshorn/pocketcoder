@@ -8,6 +8,7 @@ import { KUBERNETES_DIGEST_ANNOTATION, KUBERNETES_POOL_LABEL, KUBERNETES_WORKSPA
 import { type KubernetesToleration, resourceRequirements, schedulingFields } from "./kubernetes-scheduling";
 
 interface ManifestOptions {
+  podFinalizers?: string[];
   serviceAccountName?: string;
   imagePullPolicy: "Always" | "IfNotPresent" | "Never";
   egressImage?: string;
@@ -144,7 +145,7 @@ export function workspaceJobManifest(
       backoffLimit: 0,
       ttlSecondsAfterFinished: 3600,
       template: {
-        metadata: { labels, annotations },
+        metadata: { labels, annotations, ...(options.podFinalizers ? { finalizers: options.podFinalizers } : {}) },
         spec: {
           restartPolicy: "Never",
           automountServiceAccountToken: false,
@@ -220,7 +221,7 @@ export function warmJobManifest(
       backoffLimit: 0,
       ttlSecondsAfterFinished: 3600,
       template: {
-        metadata: { labels, annotations },
+        metadata: { labels, annotations, ...(options.podFinalizers ? { finalizers: options.podFinalizers } : {}) },
         spec: {
           restartPolicy: "Never",
           automountServiceAccountToken: false,

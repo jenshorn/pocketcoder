@@ -10,6 +10,7 @@ import type {
 import { type EgressDriverOptions, egressConfig, poolInput, workspaceInput } from "../egress/egress";
 import { isKubernetesName, kubectl, resourceName } from "./kubernetes-command";
 import { discoveredWarmRuntimes, discoveredWorkspaces } from "./kubernetes-discovery";
+import { captureTermination, EVIDENCE_FINALIZER, readTerminationEvidence } from "./kubernetes-evidence";
 import { KUBERNETES_POOL_LABEL, KUBERNETES_WORKSPACE_LABEL } from "./kubernetes-labels";
 import { warmJobManifest, workspaceJobManifest } from "./kubernetes-manifests";
 import {
@@ -17,6 +18,7 @@ import {
   type KubernetesToleration,
   validateToleration,
 } from "./kubernetes-scheduling";
+import { stopKubernetesJob } from "./kubernetes-stop";
 
 export {
   KUBERNETES_DIGEST_ANNOTATION,
@@ -29,6 +31,7 @@ export interface KubernetesDriverOptions extends EgressDriverOptions, Kubernetes
   kubectlBin?: string;
   serviceAccountName?: string;
   imagePullPolicy?: "Always" | "IfNotPresent" | "Never";
+  captureTerminationEvidence?: boolean;
 }
 
 export class KubernetesDriver implements WorkspaceDriver {
@@ -41,8 +44,10 @@ export class KubernetesDriver implements WorkspaceDriver {
   private readonly imagePullPolicy: "Always" | "IfNotPresent" | "Never";
   private readonly egress: EgressDriverOptions;
   private sidecarsSupported = false;
+  private readonly captureEvidence: boolean;
 
   constructor(options: KubernetesDriverOptions = {}) {
+    this.captureEvidence = options.captureTerminationEvidence ?? false;
     this.namespace = options.namespace ?? "default";
     if (!isKubernetesName(this.namespace)) {
       throw new Error("namespace must be a Kubernetes resource name");
@@ -115,6 +120,7 @@ export class KubernetesDriver implements WorkspaceDriver {
       nodeSelector: this.nodeSelector,
       tolerations: this.tolerations,
       imagePullPolicy: this.imagePullPolicy,
+      ...(this.captureEvidence ? { podFinalizers: [EVIDENCE_FINALIZER] } : {}),
       egressImage: this.egress.egressImage,
     });
     try {
@@ -182,6 +188,7 @@ export class KubernetesDriver implements WorkspaceDriver {
       nodeSelector: this.nodeSelector,
       tolerations: this.tolerations,
       imagePullPolicy: this.imagePullPolicy,
+      ...(this.captureEvidence ? { podFinalizers: [EVIDENCE_FINALIZER] } : {}),
       egressImage: this.egress.egressImage,
     });
     try {
@@ -231,33 +238,11 @@ export class KubernetesDriver implements WorkspaceDriver {
   }
 
   async stop(ref: ProviderRef, graceSeconds: number): Promise<void> {
-    const job = await kubectl(this.kubectlBin, this.namespace, [
-      "get",
-      "job",
-      ref.id,
-      "--ignore-not-found",
-      "-o",
-      "name",
-    ]);
-    if (job) {
-      await kubectl(this.kubectlBin, this.namespace, [
-        "patch",
-        "job",
-        ref.id,
-        "--type=merge",
-        "-p",
-        '{"spec":{"suspend":true}}',
-      ]);
+    if (this.captureEvidence) {
+      await captureTermination((args) => kubectl(this.kubectlBin, this.namespace, args), ref.id, graceSeconds);
+      return;
     }
-    await kubectl(this.kubectlBin, this.namespace, [
-      "delete",
-      "pod",
-      "-l",
-      `job-name=${ref.id}`,
-      `--grace-period=${graceSeconds}`,
-      "--wait=true",
-      "--ignore-not-found",
-    ]);
+    await stopKubernetesJob((args) => kubectl(this.kubectlBin, this.namespace, args), ref.id, graceSeconds);
   }
 
   async remove(ref: ProviderRef): Promise<void> {
@@ -274,6 +259,11 @@ export class KubernetesDriver implements WorkspaceDriver {
     if (typeof ref.egressSecret === "string") {
       await kubectl(this.kubectlBin, this.namespace, ["delete", "secret", ref.egressSecret, "--ignore-not-found"]);
     }
+  }
+
+  async terminationEvidence(ref: ProviderRef): Promise<Record<string, unknown> | null> {
+    if (!this.captureEvidence) return null;
+    return readTerminationEvidence((args) => kubectl(this.kubectlBin, this.namespace, args), ref.id);
   }
 
   async cleanupInput(workspaceId: string): Promise<void> {

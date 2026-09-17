@@ -1,5 +1,6 @@
 import { parseDurationMs, type ReasonCode, type WorkspaceState } from "@pstdio/pocketcoder-contracts";
 import type { WorkspacePatch, WorkspaceRow } from "../types";
+import { stopWorkspaceProvider } from "./provider-termination";
 import { decodeFailureLogTail, FAILURE_LOG_TAIL_BYTES, type SchedulerContext } from "./scheduler-base";
 
 export class SchedulerLifecycle {
@@ -28,12 +29,9 @@ export class SchedulerLifecycle {
     }
     if (updated.providerRef) {
       // docker stop / Job deletion performs TERM, grace, KILL.
-      this.stopAndRemove(
-        { kind: updated.providerKind ?? "", id: "", ...updated.providerRef },
-        this.context.graceSeconds(updated),
-      )
-        .then(() => this.finalize(updated, terminalState, reason, this.context.now()))
-        .catch((err) => this.context.report(`terminate.${row.id}`, err));
+      this.finalize(updated, terminalState, reason, this.context.now()).catch((err) =>
+        this.context.report(`terminate.${row.id}`, err),
+      );
     } else {
       await this.finalize(updated, terminalState, reason, at);
     }
@@ -50,12 +48,7 @@ export class SchedulerLifecycle {
     const { store, driver, connections } = this.context.deps;
     if (row.providerRef) {
       try {
-        await driver.stop({ kind: row.providerKind ?? "", id: "", ...row.providerRef }, this.context.graceSeconds(row));
-        await driver.remove({
-          kind: row.providerKind ?? "",
-          id: "",
-          ...row.providerRef,
-        });
+        await stopWorkspaceProvider(store, driver, row, this.context.graceSeconds(row), at);
       } catch (err) {
         this.context.report(`finalize.terminate.${row.id}`, err);
         // Keep the provider reference and capacity until a later sweep can
@@ -112,11 +105,6 @@ export class SchedulerLifecycle {
         ...failurePatch,
       },
     });
-  }
-
-  async stopAndRemove(ref: { kind: string; id: string; [key: string]: unknown }, graceSeconds: number): Promise<void> {
-    await this.context.deps.driver.stop(ref, graceSeconds);
-    await this.context.deps.driver.remove(ref);
   }
 
   async fail(row: WorkspaceRow, reason: ReasonCode, at: Date): Promise<void> {

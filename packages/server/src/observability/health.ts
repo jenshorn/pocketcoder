@@ -1,4 +1,4 @@
-export type ReadinessCheck = "database" | "schema" | "reconciliation" | "coordinator";
+export type ReadinessCheck = "database" | "schema" | "reconciliation" | "coordinator" | "policy-reconciliation";
 export type ReadinessStatus = "ok" | "pending" | "failed" | "disabled";
 
 export interface ReadinessSnapshot {
@@ -11,6 +11,7 @@ const HEALTHY_CHECKS: Record<ReadinessCheck, ReadinessStatus> = {
   schema: "ok",
   reconciliation: "ok",
   coordinator: "ok",
+  "policy-reconciliation": "disabled",
 };
 
 export class Readiness {
