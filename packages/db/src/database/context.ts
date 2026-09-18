@@ -5,9 +5,9 @@ import { assertValidSchema } from "../database-schema";
 import { getMigrationStatus } from "../migrations/migrator";
 import { createSchema } from "../schema";
 
-export function createDatabaseContext(databaseUrl: string, schemaName: string) {
+export function createDatabaseContext(databaseUrl: string, schemaName: string, options: { max?: number } = {}) {
   const schema = assertValidSchema(schemaName);
-  const client = new SQL(databaseUrl);
+  const client = new SQL(databaseUrl, options);
   return {
     schema,
     client,

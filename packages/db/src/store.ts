@@ -18,8 +18,8 @@ import { createWorkspaces } from "./modules/workspaces/repository";
 import { createTransitions } from "./modules/workspaces/transitions";
 
 export class PostgresStore implements Store {
-  constructor(databaseUrl: string, schema = "pocketcoder") {
-    const context = createDatabaseContext(databaseUrl, schema);
+  constructor(databaseUrl: string, schema = "pocketcoder", options: { max?: number } = {}) {
+    const context = createDatabaseContext(databaseUrl, schema, options);
     const lifecycle = createLifecycle(context);
     this.init = lifecycle.init;
     this.close = lifecycle.close;
