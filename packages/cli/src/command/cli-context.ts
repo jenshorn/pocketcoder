@@ -83,7 +83,9 @@ export async function api(path: string, init: RequestInit = {}) {
 
 export async function withStore<T>(fn: (store: Store) => Promise<T>): Promise<T> {
   const { url, schema } = dbConfig();
-  const store = new PostgresStore(url, schema);
+  // Short commands can finish while Bun's other pool connections are still starting,
+  // making pool shutdown wait for their connection timeout.
+  const store = new PostgresStore(url, schema, { max: 1 });
   try {
     return await fn(store);
   } finally {
