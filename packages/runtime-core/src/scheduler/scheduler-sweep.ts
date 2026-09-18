@@ -1,5 +1,5 @@
 import type { WorkspaceState } from "@pstdio/pocketcoder-contracts";
-
+import type { ProviderRef } from "../index";
 import type { WorkspaceRow } from "../types";
 
 import type { SchedulerContext } from "./scheduler-base";
@@ -22,6 +22,9 @@ export class SchedulerSweep {
     for (const row of rows) {
       try {
         await this.sweepRow(row, now);
+        // Retain provider identity while nodes still exist. Lifecycle deadlines
+        // run first so an observation outage cannot prevent cancellation.
+        if (row.providerRef) await this.context.deps.driver.inspect(row.providerRef as ProviderRef);
       } catch (err) {
         this.context.report(`sweep.${row.id}`, err);
       }

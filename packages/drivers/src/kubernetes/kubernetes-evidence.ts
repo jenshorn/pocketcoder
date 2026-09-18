@@ -58,6 +58,8 @@ function stopped(pod: Resource) {
     [pod.spec.ephemeralContainers, pod.status?.ephemeralContainerStatuses],
   ] as const;
   if (!pod.spec.containers?.length) return false;
+  // Kubernetes binding rejects deletionTimestamp: this Pod can no longer start.
+  if (!pod.spec.nodeName && pod.metadata.deletionTimestamp) return groups.every(([, statuses]) => !statuses?.length);
   return groups.every(
     ([spec, statuses]) =>
       (spec?.length ?? 0) === (statuses?.length ?? 0) &&
@@ -77,7 +79,11 @@ function stopped(pod: Resource) {
 function podEvidence(pod: Resource) {
   // Never persist launch environment, volumes or delegated input in evidence.
   return {
-    metadata: { uid: pod.metadata.uid, ownerReferences: pod.metadata.ownerReferences },
+    metadata: {
+      uid: pod.metadata.uid,
+      ownerReferences: pod.metadata.ownerReferences,
+      deletionTimestamp: pod.metadata.deletionTimestamp,
+    },
     spec: {
       nodeName: pod.spec.nodeName,
       containers: pod.spec.containers?.map(({ name }) => ({ name })),
@@ -108,8 +114,17 @@ function statusEvidence(statuses: ContainerStatus[] | undefined) {
 }
 
 async function retain(run: Command, pod: Resource) {
-  if (!pod.metadata.name || !pod.metadata.uid || !pod.spec.nodeName)
-    throw new Error("Termination evidence unavailable");
+  if (!pod.metadata.name || !pod.metadata.uid) throw new Error("Termination evidence unavailable");
+  if (!pod.spec.nodeName) {
+    await patch(run, "pod", pod.metadata.name, {
+      metadata: {
+        uid: pod.metadata.uid,
+        resourceVersion: pod.metadata.resourceVersion,
+        finalizers: [...new Set([...(pod.metadata.finalizers ?? []), EVIDENCE_FINALIZER])],
+      },
+    });
+    return null;
+  }
   const cached = pod.metadata.annotations?.[NODE_ANNOTATION];
   const node = cached
     ? (JSON.parse(cached) as Resource)
@@ -129,6 +144,24 @@ async function retain(run: Command, pod: Resource) {
     },
   });
   return identity;
+}
+
+export async function retainNodeIdentities(run: Command, name: string, jobUid: string) {
+  const pods = await podsFor(run, name);
+  if (pods.some((pod) => !owned(pod, jobUid))) throw new Error("Termination provider changed");
+  for (const pod of pods) {
+    // Persist while the node exists; autoscaling can remove it before stop runs.
+    if (pod.spec.nodeName && !pod.metadata.annotations?.[NODE_ANNOTATION]) await retain(run, pod);
+  }
+}
+
+async function retainNodes(run: Command, pods: Resource[], nodes: Record<string, unknown>) {
+  for (const pod of pods) {
+    if (pod.spec.nodeName && nodes[pod.spec.nodeName] && pod.metadata.finalizers?.includes(EVIDENCE_FINALIZER))
+      continue;
+    const node = await retain(run, pod);
+    if (pod.spec.nodeName) nodes[pod.spec.nodeName] = node;
+  }
 }
 
 async function releasePods(run: Command, name: string, jobUid: string) {
@@ -171,7 +204,7 @@ export async function captureTermination(run: Command, name: string, graceSecond
   if (!initial.length || initial.some((pod) => !owned(pod, job.metadata.uid as string)))
     throw new Error("Termination evidence unavailable");
   const nodes: Record<string, unknown> = {};
-  for (const pod of initial) nodes[pod.spec.nodeName as string] = await retain(run, pod);
+  await retainNodes(run, initial, nodes);
   await patch(run, "job", name, { metadata: { uid: job.metadata.uid }, spec: { suspend: true } });
   const confirmed = await stoppedJob(run, name, job.metadata.uid, Date.now() + (graceSeconds + 5) * 1000);
   const retained = await podsFor(run, name);
@@ -197,6 +230,8 @@ export async function captureTermination(run: Command, name: string, graceSecond
       pods.some((pod) => !retained.some((old) => old.metadata.uid === pod.metadata.uid))
     )
       throw new Error("Termination provider disappeared without evidence");
+    // Binding may have won the race with deletion after the initial snapshot.
+    await retainNodes(run, pods, nodes);
     if (pods.every(stopped)) {
       const proof = {
         job: {

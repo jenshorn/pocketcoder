@@ -10,7 +10,12 @@ import type {
 import { type EgressDriverOptions, egressConfig, poolInput, workspaceInput } from "../egress/egress";
 import { isKubernetesName, kubectl, resourceName } from "./kubernetes-command";
 import { discoveredWarmRuntimes, discoveredWorkspaces } from "./kubernetes-discovery";
-import { captureTermination, EVIDENCE_FINALIZER, readTerminationEvidence } from "./kubernetes-evidence";
+import {
+  captureTermination,
+  EVIDENCE_FINALIZER,
+  readTerminationEvidence,
+  retainNodeIdentities,
+} from "./kubernetes-evidence";
 import { KUBERNETES_POOL_LABEL, KUBERNETES_WORKSPACE_LABEL } from "./kubernetes-labels";
 import { warmJobManifest, workspaceJobManifest } from "./kubernetes-manifests";
 import {
@@ -226,8 +231,13 @@ export class KubernetesDriver implements WorkspaceDriver {
     ]);
     if (!output) return { exists: false, running: false, exitCode: null };
     const job = JSON.parse(output) as {
+      metadata?: { uid?: string };
       status?: { active?: number; succeeded?: number; failed?: number };
     };
+    if (this.captureEvidence) {
+      if (!job.metadata?.uid) throw new Error("Termination evidence unavailable");
+      await retainNodeIdentities((args) => kubectl(this.kubectlBin, this.namespace, args), ref.id, job.metadata.uid);
+    }
     const running = (job.status?.active ?? 0) > 0;
     const completedExitCode = job.status?.succeeded ? 0 : 1;
     return {
