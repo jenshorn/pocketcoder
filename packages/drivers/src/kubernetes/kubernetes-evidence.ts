@@ -113,7 +113,30 @@ function statusEvidence(statuses: ContainerStatus[] | undefined) {
   }));
 }
 
+async function updatePod<T>(run: Command, pod: Resource, update: (current: Resource) => Promise<T>): Promise<T> {
+  const uid = pod.metadata.uid;
+  const owner = pod.metadata.ownerReferences?.find((item) => item.kind === "Job" && item.controller)?.uid;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await update(pod);
+    } catch (error) {
+      if (attempt >= 4 || !(error instanceof Error) || !error.message.includes("Error from server (Conflict)"))
+        throw error;
+      // Kubelet and Job-controller status updates can race either finalizer
+      // patch. Recompute from fresh metadata without overwriting their changes.
+      await Bun.sleep(25 * (attempt + 1));
+      pod = JSON.parse(await run(["get", "pod", pod.metadata.name as string, "-o", "json"])) as Resource;
+      if (!uid || pod.metadata.uid !== uid || !owner || !owned(pod, owner))
+        throw new Error("Termination provider changed");
+    }
+  }
+}
+
 async function retain(run: Command, pod: Resource) {
+  return updatePod(run, pod, (current) => retainCurrent(run, current));
+}
+
+async function retainCurrent(run: Command, pod: Resource) {
   if (!pod.metadata.name || !pod.metadata.uid) throw new Error("Termination evidence unavailable");
   if (!pod.spec.nodeName) {
     await patch(run, "pod", pod.metadata.name, {
@@ -167,13 +190,15 @@ async function retainNodes(run: Command, pods: Resource[], nodes: Record<string,
 async function releasePods(run: Command, name: string, jobUid: string) {
   for (const pod of await podsFor(run, name)) {
     if (!owned(pod, jobUid) || !pod.metadata.finalizers?.includes(EVIDENCE_FINALIZER)) continue;
-    await patch(run, "pod", pod.metadata.name as string, {
-      metadata: {
-        uid: pod.metadata.uid,
-        resourceVersion: pod.metadata.resourceVersion,
-        finalizers: pod.metadata.finalizers.filter((item) => item !== EVIDENCE_FINALIZER),
-      },
-    });
+    await updatePod(run, pod, (current) =>
+      patch(run, "pod", current.metadata.name as string, {
+        metadata: {
+          uid: current.metadata.uid,
+          resourceVersion: current.metadata.resourceVersion,
+          finalizers: current.metadata.finalizers?.filter((item) => item !== EVIDENCE_FINALIZER) ?? [],
+        },
+      }),
+    );
   }
 }
 
