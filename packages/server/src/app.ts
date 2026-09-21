@@ -12,6 +12,7 @@ import {
   type ResolvedWarmPool,
   RuntimeMetrics,
   Scheduler,
+  type SchedulerDeps,
   type Store,
   WarmPoolManager,
   type WorkspaceDriver,
@@ -41,6 +42,7 @@ import { WorkspaceService } from "./workspaces/service";
 import { registerWorkspaceRoutes } from "./workspaces/workspaces-routes";
 
 export interface BuildDeps {
+  authorizeLaunch?: SchedulerDeps["authorizeLaunch"];
   store: Store;
   driver: WorkspaceDriver & { cleanupInput?(workspaceId: string): Promise<void> };
   storageDriver?: WorkspaceStorageDriver;
@@ -136,6 +138,7 @@ export function buildServer(deps: BuildDeps): BuiltServer {
     : undefined;
   const persistenceHolder: { service?: PersistenceService } = {};
   const scheduler = new Scheduler({
+    ...(deps.authorizeLaunch ? { authorizeLaunch: deps.authorizeLaunch } : {}),
     store,
     driver,
     ...(deps.storageDriver ? { storageDriver: deps.storageDriver } : {}),

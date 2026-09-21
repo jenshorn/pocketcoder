@@ -2,12 +2,14 @@ import { randomBytes } from "node:crypto";
 import { parseDurationMs } from "@pstdio/pocketcoder-contracts";
 import type { KubernetesToleration } from "@pstdio/pocketcoder-drivers";
 import { type AdmissionLimits, DEFAULT_LIMITS, type WarmPoolConfigEntry } from "@pstdio/pocketcoder-runtime-core";
+import { launchPolicyConfig } from "../lifecycle/launch-policy";
 import { DEFAULT_PERSISTENCE_LIMITS, type PersistenceLimits } from "../persistence/persistence";
 import { resolveKubernetesScheduling } from "./kubernetes-scheduling-config";
 
 type Environment = Record<string, string | undefined>;
 
 export interface ServerConfig {
+  launchPolicy?: ReturnType<typeof launchPolicyConfig>;
   listenHost: string;
   listenPort: number;
   storeKind: "postgres" | "memory";
@@ -297,6 +299,7 @@ export function loadConfig(env: Environment = process.env): ServerConfig {
   }
   return {
     listenHost: env.POCKETCODER_HOST ?? "127.0.0.1",
+    launchPolicy: launchPolicyConfig(env),
     listenPort,
     storeKind,
     databaseUrl,

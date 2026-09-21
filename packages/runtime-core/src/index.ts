@@ -81,6 +81,7 @@ export {
   loadTemplateSource,
   type RegistryLoadResult,
 } from "./registry/registry";
+export { stopWorkspaceProvider } from "./scheduler/provider-termination";
 export {
   type AdmissionLimits,
   type ConnectionHub,

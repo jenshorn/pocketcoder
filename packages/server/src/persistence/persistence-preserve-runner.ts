@@ -5,6 +5,7 @@ import type {
   WorkspaceRow,
   WorkspaceStorageRow,
 } from "@pstdio/pocketcoder-runtime-core";
+import { stopWorkspaceProvider } from "@pstdio/pocketcoder-runtime-core";
 import type { PersistenceContext, SnapshotResult } from "./persistence-base";
 
 export class PersistencePreserveRunner {
@@ -17,13 +18,13 @@ export class PersistencePreserveRunner {
     const quiesced =
       native || hook ? await this.context.deps.hub.prepareCheckpoint(workspace.id, operationId, deadlineMs) : false;
     if (!workspace.providerRef) return quiesced;
-    await this.context.deps.driver.stop(
-      {
-        kind: workspace.providerKind ?? "",
-        id: "",
-        ...workspace.providerRef,
-      },
+    await stopWorkspaceProvider(
+      this.context.deps.store,
+      this.context.deps.driver,
+      workspace,
       Math.max(1, Math.ceil(parseDurationMs(workspace.templateSnapshot.spec.timeouts.terminateGrace) / 1000)),
+      this.context.now(),
+      false,
     );
     return quiesced;
   }

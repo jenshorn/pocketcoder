@@ -140,7 +140,7 @@ describe("warm workspace pooling", () => {
     expect(p95(warm)).toBeLessThanOrEqual(p95(cold) * 0.2);
     expect(warmDriver.created).toHaveLength(0);
   });
-  test("leases a ready runtime without calling cold provider creation", async () => {
+  test("requires admission before leasing a ready runtime without cold creation", async () => {
     const store = new MemoryStore();
     const driver = new FakeDriver();
     const seeded = await seed(store);
@@ -174,7 +174,9 @@ describe("warm workspace pooling", () => {
     expect(await manager.markReady(runtime?.id ?? "")).toBe(true);
 
     const workspace = await queue(store, seeded, "warm-hit");
+    let allowed = false;
     const scheduler = new Scheduler({
+      authorizeLaunch: async () => allowed,
       store,
       driver,
       connections: noWorkspaceConnections,
@@ -183,6 +185,10 @@ describe("warm workspace pooling", () => {
       workspaceServerUrl: "http://127.0.0.1:7080",
       warmPool: manager,
     });
+    await scheduler.admit();
+    expect(assignments.inputs).toHaveLength(0);
+    expect((await store.getWorkspace(workspace.id))?.state).toBe("queued");
+    allowed = true;
     await scheduler.admit();
 
     const after = await store.getWorkspace(workspace.id);

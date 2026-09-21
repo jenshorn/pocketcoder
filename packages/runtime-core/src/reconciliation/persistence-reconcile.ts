@@ -1,5 +1,6 @@
-import type { CheckpointRef, ProviderRef, WorkspaceDriver, WorkspaceStorageDriver } from "../driver";
+import type { CheckpointRef, WorkspaceDriver, WorkspaceStorageDriver } from "../driver";
 import type { MetricSink } from "../observability/metrics";
+import { stopWorkspaceProvider } from "../scheduler/provider-termination";
 import type { Store, WorkspaceCheckpointRow, WorkspaceOperationRow, WorkspaceRow, WorkspaceStorageRow } from "../types";
 import { measureReconciliation } from "./reconciliation-metrics";
 
@@ -77,8 +78,7 @@ async function reconcileDeletion(
 
 async function cleanupProvider(deps: PersistenceReconcileDeps, workspace: WorkspaceRow | null): Promise<void> {
   if (!workspace?.providerRef) return;
-  await deps.driver.stop(workspace.providerRef as ProviderRef, 1).catch(() => {});
-  await deps.driver.remove(workspace.providerRef as ProviderRef).catch(() => {});
+  await stopWorkspaceProvider(deps.store, deps.driver, workspace, 1, deps.now?.() ?? new Date());
 }
 
 async function completePreserve(

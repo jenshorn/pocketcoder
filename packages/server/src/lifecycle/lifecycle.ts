@@ -23,6 +23,8 @@ import { configSummary, loadConfig, type ServerConfig } from "../config/config";
 import { Readiness } from "../observability/health";
 import { createStructuredLogger } from "../observability/observability";
 import { SERVER_IDLE_TIMEOUT_SECONDS } from "../observability/server-timing";
+import { loadLaunchPolicy } from "./launch-policy";
+import { loadPolicyReconciliation } from "./policy-reconciliation";
 
 export type ServerLog = (message: string) => void;
 
@@ -76,6 +78,7 @@ function createWorkspaceDriver(config: ServerConfig) {
     return new KubernetesDriver({
       ...egress,
       namespace: config.kubernetesNamespace,
+      captureTerminationEvidence: Boolean(config.launchPolicy),
       nodeSelector: config.kubernetesNodeSelector ?? undefined,
       tolerations: config.kubernetesTolerations,
       ...(config.kubernetesServiceAccount ? { serviceAccountName: config.kubernetesServiceAccount } : {}),
@@ -158,6 +161,7 @@ export async function startPocketCoderServer(
   options: { log?: ServerLog; instanceId?: string } = {},
 ): Promise<RunningPocketCoderServer> {
   const log = options.log ?? defaultLog;
+  const authorizeLaunch = loadLaunchPolicy(config.launchPolicy);
   const logger = createStructuredLogger((record) => log(JSON.stringify(record)));
   const metrics = new RuntimeMetrics();
   log(`config: ${JSON.stringify(configSummary(config))}`);
@@ -179,7 +183,10 @@ export async function startPocketCoderServer(
     const storageDriver = createStorageDriver(config);
     const secretResolver = createSecretResolver(config);
     const readiness = new Readiness({ reconciliation: "pending" }, metrics);
+    const policyReconciliation = loadPolicyReconciliation(store, config.launchPolicy);
+    if (policyReconciliation) readiness.set("policy-reconciliation", "pending");
     const { app, websocket, scheduler, persistence, warmPool } = buildServer({
+      ...(authorizeLaunch ? { authorizeLaunch } : {}),
       store,
       driver,
       ...(storageDriver ? { storageDriver } : {}),
@@ -224,6 +231,22 @@ export async function startPocketCoderServer(
       log,
     );
     const outboxTimer = startExclusiveTimer(config.outboxIntervalMs, () => outbox.tick(), "outbox tick failed", log);
+    const policyTimer = policyReconciliation
+      ? startExclusiveTimer(
+          config.schedulerIntervalMs,
+          async () => {
+            try {
+              await policyReconciliation.tick();
+              readiness.set("policy-reconciliation", "ok");
+            } catch (error) {
+              readiness.set("policy-reconciliation", "failed");
+              throw error;
+            }
+          },
+          "policy reconciliation failed",
+          log,
+        )
+      : null;
     const warmPoolTimer =
       warmPool && warmPoolContinuously
         ? startExclusiveTimer(
@@ -258,6 +281,8 @@ export async function startPocketCoderServer(
       clearInterval(schedulerTimer);
       clearInterval(outboxTimer);
       clearInterval(retentionTimer);
+      if (policyTimer) clearInterval(policyTimer);
+      await policyReconciliation?.drain();
       if (warmPoolTimer) clearInterval(warmPoolTimer);
       throw error;
     }
@@ -281,6 +306,8 @@ export async function startPocketCoderServer(
           clearInterval(schedulerTimer);
           clearInterval(outboxTimer);
           clearInterval(retentionTimer);
+          if (policyTimer) clearInterval(policyTimer);
+          await policyReconciliation?.drain();
           if (warmPoolTimer) clearInterval(warmPoolTimer);
           await server.stop(true);
           // Initial reconciliation still owns store queries after listen succeeds.

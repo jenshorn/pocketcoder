@@ -58,6 +58,7 @@ export interface WorkspaceDriver {
   // Runtime stop and object deletion are separate so persistence workflows
   // can snapshot a quiesced workload before deleting the provider object.
   stop(ref: ProviderRef, graceSeconds: number): Promise<void>;
+  terminationEvidence?(ref: ProviderRef): Promise<Record<string, unknown> | null>;
   remove(ref: ProviderRef): Promise<void>;
   // Every provider object labeled as a pocketcoder workspace, for
   // restart reconciliation and quarantine of unknown objects.
